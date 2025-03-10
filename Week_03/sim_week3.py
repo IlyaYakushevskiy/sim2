@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle, Circle
 from heapq import *
 import matplotlib.cm as cmap
+import matplotlib.colors as colors
+
 
 """pasting task 1 to submit 1 file  """
 import numpy as np
@@ -180,7 +182,10 @@ def plot_NNS(pq, r, period, ax, color='red'):
 ###WEEK 3 
 """For each particle calculate the “top-hat” density from the 32 nearest neighbors and plot it using a colormap. 
 We will need the density to implement SPH so it needs to be well tested. Also, make sure it can work with periodic boundary conditions!
- Design the program such that you can easily switch the kernel function."""
+ Design the program such that you can easily switch the kernel function.
+ Now, calculate the density using the Monaghan kernel defined in the lecture. Plot and compare to the density you get from the “top-hat” 
+ kernel (the Monaghan result should be a little smoother).
+ """
 
 def top_hat_kernel(r, h):
     return 1 if r < h else 0
@@ -212,18 +217,44 @@ if __name__ == "__main__":
     cell = Cell([0, 0], [1, 1], 0, len(particles))
     particles, cell = recursive_partitioning(particles, cell, 0)
 
-    fig, ax = plt.subplots(figsize=(8, 8))
-    rhos = [] 
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+
+    rhos_top_hat = []
+    rhos_monaghan = []
 
     for particle in particles:
         pq = prioq(k)
+        #h = np.sqrt(-pq.key())
         neighbor_search_periodic(pq, cell, particles, particle.coord, np.array([1, 1]))
-        rho = density(pq, kernel="top hat", h=0.01) 
-        rhos.append(rho)
+        rho1 = density(pq, kernel="top hat", h=0.01)
+        rho2 = density(pq, kernel="monaghan", h=0.01)
+        rhos_top_hat.append(rho1)
+        rhos_monaghan.append(rho2)
 
-    rhos = np.array(rhos)
-    colors_density = plt.cm.jet(((rhos - rhos.min()) / rhos.ptp()))  
-    sc = ax.scatter([p.coord[0] for p in particles], [p.coord[1] for p in particles], color=colors_density, s=10)
 
-    cbar = plt.colorbar(sc, ax=ax)
-    plt.show()
+    rhos_top_hat = np.array(rhos_top_hat)
+    rhos_monaghan = np.array(rhos_monaghan)
+
+ 
+    vmin = min(rhos_top_hat.min(), rhos_monaghan.min())
+    vmax = max(rhos_top_hat.max(), rhos_monaghan.max())
+    norm = colors.Normalize(vmin=vmin, vmax=vmax)
+
+
+    # Top Hat Plot
+    sc1 = ax1.scatter([p.coord[0] for p in particles], [p.coord[1] for p in particles],
+                      c=rhos_top_hat, cmap='jet', norm=norm, s=10)
+    ax1.set_title("Top-Hat Kernel")
+    cbar1 = plt.colorbar(sc1, ax=ax1)
+    cbar1.set_label("Density")
+
+    # Monaghan Plot
+    sc2 = ax2.scatter([p.coord[0] for p in particles], [p.coord[1] for p in particles],
+                      c=rhos_monaghan, cmap='jet', norm=norm, s=10)
+    ax2.set_title("Monaghan Kernel")
+    cbar2 = plt.colorbar(sc2, ax=ax2)
+
+
+    plt.tight_layout()
+    #plt.show()
+    plt.savefig('week3_kernels.png')
