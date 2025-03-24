@@ -5,20 +5,16 @@ from matplotlib.patches import Rectangle, Circle
 from heapq import *
 import matplotlib.cm as cmap
 import matplotlib.colors as colors
-
-
-"""pasting task 1 to submit 1 file  """
-import numpy as np
-import numpy.random as rng
-import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle, Circle
+import random
+from matplotlib.animation import FuncAnimation
 
 
 
 
 class Particle: 
-    def __init__(self,coord):
+    def __init__(self, coord, vel=None):
         self.coord = coord
+        self.vel = vel if vel is not None else np.array([0.0, 0.0])
     def __str__(self):
         return f"Particle:\n\tLocation: {self.coord}"
 
@@ -40,10 +36,6 @@ class Cell:
         if self.r != None:
             self.r.print_all_cells()
 
-particles = np.array([Particle([rng.random(), rng.random()]) for i in range(1000)])
-cell = Cell([0,0], [1,1], 0, len(particles))
-
-cell.print_all_cells()
 
 def partitioning(particles, cell: Cell, cut_dim: int):
 
@@ -130,15 +122,16 @@ def plot_particle_cells(particles, cell:Cell, ax=None):
 class prioq:
     def __init__(self, k):
         self.heap = []
-        sentinel = (-np.inf, None, np.array([0.0, 0.0])) #dist^2 (priority) , particle, dr
+        sentinel = (-np.inf, None, np.array([0.0, 0.0]), np.array([0.0, 0.0]))  # (dist^2, particle, dr, velocity)
         for _ in range(k):
             heappush(self.heap, sentinel)
 
-    def replace(self, dist2, particle, dr):
-        heapreplace(self.heap, (dist2, particle, dr))
+    def replace(self, dist2, particle, dr, velocity):
+        heapreplace(self.heap, (dist2, particle, dr, velocity))
 
     def key(self):
         return self.heap[0][0]
+
 
 def celldist2(cell, r):
     d1 = r - cell.c_high
@@ -153,7 +146,8 @@ def neighbor_search(pq, root, particles, r, r_o):
             dist2 = -np.sum(np.square(p.coord + r_o - r))
             if dist2 > pq.key():
                 curr_dist = p.coord + r_o - r
-                pq.replace(dist2, p, curr_dist)
+                pq.replace(dist2, p, curr_dist, p.vel)
+
     else:
         if -celldist2(root.l, r - r_o) > pq.key():
             neighbor_search(pq, root.l, particles, r, r_o)
@@ -187,12 +181,12 @@ We will need the density to implement SPH so it needs to be well tested. Also, m
  kernel (the Monaghan result should be a little smoother).
  """
 
-def top_hat_kernel(r, h):
-    norm_factor = 1 / (np.pi * h**2)
-    return norm_factor if r < h else 0
+# def top_hat_kernel(r, h):
+#     norm_factor = 1 / (np.pi * h**2)
+#     return norm_factor if r < h else 0
 
 
-def monaghan_kernel(r, h):
+def monaghan_kernel(r, h = 1.0):
     q = r / h
     norm_factor = 10 / (7 * np.pi * h**2)
     if q < 0.5:
@@ -202,62 +196,144 @@ def monaghan_kernel(r, h):
     else:
         return 0
     
-def density(pq, kernel="top hat", h=0.01):
+def grad_monaghan_kernel(dr, h=1.0):
+    r_j = np.linalg.norm(dr)  
+    if r_j == 0:
+        return np.array([0.0, 0.0])  
+
+    q = r_j / h
+    norm_factor = 10 / (7 * np.pi * h**2)
+
+    if q < 0.5:
+        return (12 * q + 18 * q**2) * norm_factor * (dr / r_j)  
+    elif q < 1:
+        return (-6 * (1 - q)**2) * norm_factor * (dr / r_j)  
+    else:
+        return np.array([0.0, 0.0]) 
+    
+def density(pq, m = 1, kernel="monaghan", h=1.0):
     rho = 0
     for p_j in pq.heap:
         dist = p_j[0]  # dist^2
         r_j = np.sqrt(-dist) 
-        if kernel == "top hat":
-            rho += top_hat_kernel(r_j, h)  # uniform mass = 1
+        # if kernel == "top hat":
+        #     rho += top_hat_kernel(r_j, h)  # uniform mass = 1
 
         if kernel == "monaghan":
-            rho += monaghan_kernel(r_j, h)
+            rho += m * monaghan_kernel(r_j, h)
     return rho
+
+def pressure(rho, rho0 = 1, c=343):
+    return c**2 * rho0 / 7 * ((rho / rho0)**7 - 1)
+
+def a(pq, p_i, rho_i, h=1.0, m=1):
+    a_i = np.array([0.0, 0.0])
+    
+    for dist2, p_j, dr, v_j in pq.heap:
+        if p_j is None:
+            continue  
+
+        rho_j = density(pq, m, kernel="monaghan")  
+
+        if rho_j == 0 or rho_i == 0:
+            continue
+
+        p_j_val = pressure(rho_j, rho0=1, c=343)  
+
+        grad_W = grad_monaghan_kernel(dr, h)  
+
+        a_i += ((p_j_val / rho_j**2) + (p_i / rho_i**2)) * grad_W 
+        
+    return -a_i
+
+
+def u_dot(pq, p_i, rho_i, v_i, h=1.0, m=1): 
+    u_dot_i = 0
+    
+    for _, p_j, dr, v_j in pq.heap:
+        if p_j is None:
+            continue  
+
+
+        if rho_i == 0:
+            continue
+
+        grad_W = grad_monaghan_kernel(dr, h)  
+
+        v_ij = v_i - v_j  
+
+        u_dot_i += m * (p_i / rho_i**2) * np.dot(grad_W, v_ij)  
+
+    return -u_dot_i
+
+
+    
+#be calculated for each particle and it's n neighbours from pq
+def sph_update(pq, r, h, u, v, rho0, dt, m=1):
+    c = 343
+
+
+    rho = density(pq, m=m, kernel="monaghan", h=h)
+    p = pressure(rho, rho0=rho0, c=c)
+
+    
+    a_val = a(pq, p, rho, h, m)
+    u_dot_val = u_dot(pq, p, rho, v, h, m)
+
+    # DRIFT1
+    r_half = r + (v * dt / 2)
+    v_pred = v + (a_val * dt / 2)
+    u_pred = u + (u_dot_val * dt / 2)
+
+    # KICK
+    a_half = a(pq, p, rho, h, m)
+    u_dot_half = u_dot(pq, p, rho, v_pred, h, m)
+
+
+    v_new = v + a_half * dt
+    u_new = u + u_dot_half * dt
+
+   
+    r_new = r + v_new * dt
+
+    rho_new = density(pq, m=m, kernel="monaghan", h=h)
+    p_new = pressure(rho_new, rho0=rho0, c=c)
+
+    return {"r": r_new, "v": v_new, "u": u_new, "rho": rho_new, "p": p_new}
+
+
+def update(frame):
+    global particles, velocities, rhos
+    for i, particle in enumerate(particles):
+        
+        pq = prioq(k)
+        neighbor_search_periodic(pq, cell, particles, particle.coord, np.array([1, 1]))
+        
+        rhos[i] = density(pq, m=1, kernel="monaghan", h=0.1)
+        
+        sph = sph_update(pq, particle.coord, h=0.1, u=10, v=velocities[i], rho0=1, dt=0.03)
+        #velocities[i] = sph["v"]
+        particle.coord = (sph["r"]) % 1
+
+
+    coords = np.array([p.coord for p in particles])
+    sc.set_offsets(coords)
+    sc.set_array(rhos)
+    return sc,
+
+
 
 if __name__ == "__main__":
     k = 32
-    particles = np.array([Particle([rng.random(), rng.random()]) for _ in range(1000)])
+    particles = np.array([Particle([np.random.random(), np.random.random()]) for _ in range(32)])
     cell = Cell([0, 0], [1, 1], 0, len(particles))
     particles, cell = recursive_partitioning(particles, cell, 0)
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+    rhos = np.zeros(len(particles))
+    velocities = np.random.uniform(-1, 1, (len(particles), 2)) * 0.01
 
-    rhos_top_hat = []
-    rhos_monaghan = []
+    fig, ax = plt.subplots(figsize=(8, 8))
+    sc = ax.scatter([p.coord[0] for p in particles], [p.coord[1] for p in particles], c=rhos, cmap="viridis")
 
-    for particle in particles:
-        pq = prioq(k)
-        #h = np.sqrt(-pq.key())
-        neighbor_search_periodic(pq, cell, particles, particle.coord, np.array([1, 1]))
-        rho1 = density(pq, kernel="top hat", h=0.01)
-        rho2 = density(pq, kernel="monaghan", h=0.01)
-        rhos_top_hat.append(rho1)
-        rhos_monaghan.append(rho2)
-
-
-    rhos_top_hat = np.array(rhos_top_hat)
-    rhos_monaghan = np.array(rhos_monaghan)
-
- 
-    vmin = min(rhos_top_hat.min(), rhos_monaghan.min())
-    vmax = max(rhos_top_hat.max(), rhos_monaghan.max())
-    norm = colors.Normalize(vmin=vmin, vmax=vmax)
-
-
-    # Top Hat Plot
-    sc1 = ax1.scatter([p.coord[0] for p in particles], [p.coord[1] for p in particles],
-                      c=rhos_top_hat, cmap='jet', norm=norm, s=10)
-    ax1.set_title("Top-Hat Kernel")
-    cbar1 = plt.colorbar(sc1, ax=ax1)
-    cbar1.set_label("Density")
-
-    # Monaghan Plot
-    sc2 = ax2.scatter([p.coord[0] for p in particles], [p.coord[1] for p in particles],
-                      c=rhos_monaghan, cmap='jet', norm=norm, s=10)
-    ax2.set_title("Monaghan Kernel")
-    cbar2 = plt.colorbar(sc2, ax=ax2)
-
-
-    plt.tight_layout()
-    plt.show()
-    #plt.savefig('week3_kernels.png')
+    ani = FuncAnimation(fig, update, interval=1, blit=False, save_count=150)
+    ani.save("sph.mp4", writer="ffmpeg", fps=30)

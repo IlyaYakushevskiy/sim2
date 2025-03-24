@@ -152,7 +152,7 @@ import matplotlib.pyplot as plt
 from sklearn import neighbors
 from tqdm import tqdm
 
-MAX_PARTICLES = 1250
+MAX_PARTICLES = 125
 DOMAIN_WIDTH = 40
 DOMAIN_HEIGHT = 80
 
