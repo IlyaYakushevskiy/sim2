@@ -174,29 +174,25 @@ def plot_NNS(pq, r, period, ax, color='red'):
 
 
 ###WEEK 3 
-"""For each particle calculate the “top-hat” density from the 32 nearest neighbors and plot it using a colormap. 
-We will need the density to implement SPH so it needs to be well tested. Also, make sure it can work with periodic boundary conditions!
- Design the program such that you can easily switch the kernel function.
- Now, calculate the density using the Monaghan kernel defined in the lecture. Plot and compare to the density you get from the “top-hat” 
- kernel (the Monaghan result should be a little smoother).
- """
 
 # def top_hat_kernel(r, h):
 #     norm_factor = 1 / (np.pi * h**2)
 #     return norm_factor if r < h else 0
 
 
-def monaghan_kernel(r, h = 1.0):
+def monaghan_kernel(r, h ):
+    # if r == 0:
+    #     print("r == 0")
     q = r / h
     norm_factor = 10 / (7 * np.pi * h**2)
     if q < 0.5:
         return norm_factor*(1 - 6 * q**2 + 6 * q**3)
-    elif q < 1:
+    elif q <= 1:
         return norm_factor *(2 * (1 - q)**3)
     else:
-        return 0
+        return 0 #why is this being triggered? 
     
-def grad_monaghan_kernel(dr, h=1.0):
+def grad_monaghan_kernel(dr, h):
     r_j = np.linalg.norm(dr)  
     if r_j == 0:
         return np.array([0.0, 0.0])  
@@ -211,23 +207,32 @@ def grad_monaghan_kernel(dr, h=1.0):
     else:
         return np.array([0.0, 0.0]) 
     
-def density(pq, m = 1, kernel="monaghan", h=1.0):
+def density(pq, m = 1, kernel="monaghan"):
     rho = 0
-    for p_j in pq.heap:
-        dist = p_j[0]  # dist^2
-        r_j = np.sqrt(-dist) 
-        # if kernel == "top hat":
-        #     rho += top_hat_kernel(r_j, h)  # uniform mass = 1
 
-        if kernel == "monaghan":
-            rho += m * monaghan_kernel(r_j, h)
+    for p_j in pq.heap:
+        #print(p_j)
+        r_j = np.linalg.norm(p_j[2])
+
+        if r_j == 0.0 :
+            continue  # Skip sentinel values
+    
+        h = np.linalg.norm(pq.heap[0][2]) 
+        rho += m * monaghan_kernel(r_j, h)
+
+    if rho <= 0:
+        print(f"Error: Density is {rho} for particle {p_j[1].coord}")
+
     return rho
 
-def pressure(rho, rho0 = 1, c=343):
-    return c**2 * rho0 / 7 * ((rho / rho0)**7 - 1)
+def pressure(rho, u):
+    return 6 * rho * u 
+   
 
-def a(pq, p_i, rho_i, h=1.0, m=1):
+
+def a(pq, p_i, rho_i, u = 0,  m=1):
     a_i = np.array([0.0, 0.0])
+
     
     for dist2, p_j, dr, v_j in pq.heap:
         if p_j is None:
@@ -238,7 +243,9 @@ def a(pq, p_i, rho_i, h=1.0, m=1):
         if rho_j == 0 or rho_i == 0:
             continue
 
-        p_j_val = pressure(rho_j, rho0=1, c=343)  
+        p_j_val = pressure(rho_j, u)  
+
+        h = np.linalg.norm(pq.heap[0][2]) 
 
         grad_W = grad_monaghan_kernel(dr, h)  
 
@@ -247,17 +254,18 @@ def a(pq, p_i, rho_i, h=1.0, m=1):
     return -a_i
 
 
-def u_dot(pq, p_i, rho_i, v_i, h=1.0, m=1): 
+def u_dot(pq, p_i, rho_i,  v_i, m=1): 
+
     u_dot_i = 0
     
     for _, p_j, dr, v_j in pq.heap:
-        if p_j is None:
+        if p_j is None: #should never happen, density is always positive ! 
             continue  
-
 
         if rho_i == 0:
             continue
 
+        h = np.linalg.norm(pq.heap[0][2]) 
         grad_W = grad_monaghan_kernel(dr, h)  
 
         v_ij = v_i - v_j  
@@ -266,38 +274,39 @@ def u_dot(pq, p_i, rho_i, v_i, h=1.0, m=1):
 
     return -u_dot_i
 
-
+def speed_of_sound(u_pred):
+    return np.sqrt(7*(7-1) * u_pred)
     
 #be calculated for each particle and it's n neighbours from pq
-def sph_update(pq, r, h, u, v, rho0, dt, m=1):
-    c = 343
+def sph_update(pq, r, u, v, rho0, dt, m=1):
 
-
-    rho = density(pq, m=m, kernel="monaghan", h=h)
-    p = pressure(rho, rho0=rho0, c=c)
+    rho = density(pq, m=m, kernel="monaghan") 
+    p = pressure(rho, u)
 
     
-    a_val = a(pq, p, rho, h, m)
-    u_dot_val = u_dot(pq, p, rho, v, h, m)
+    a_val = a(pq, p, rho, m) 
+    u_dot_val = u_dot(pq, p, rho, v, m)
 
     # DRIFT1
-    r_half = r + (v * dt / 2)
+    r_half = (r + (v * dt / 2)) % 1
     v_pred = v + (a_val * dt / 2)
     u_pred = u + (u_dot_val * dt / 2)
 
     # KICK
-    a_half = a(pq, p, rho, h, m)
-    u_dot_half = u_dot(pq, p, rho, v_pred, h, m)
+    a_half = a(pq, p, rho, m)
+    u_dot_half = u_dot(pq, p, rho, v_pred, m)
 
 
     v_new = v + a_half * dt
     u_new = u + u_dot_half * dt
 
-   
-    r_new = r + v_new * dt
+    #DRIFT2 
+    r_new = (r_half + v_new * dt/2) % 1
 
-    rho_new = density(pq, m=m, kernel="monaghan", h=h)
-    p_new = pressure(rho_new, rho0=rho0, c=c)
+    rho_new = density(pq, m=m, kernel="monaghan")
+    c = speed_of_sound(u_pred)
+
+    p_new = pressure(rho_new,u_new )
 
     return {"r": r_new, "v": v_new, "u": u_new, "rho": rho_new, "p": p_new}
 
@@ -309,10 +318,9 @@ def update(frame):
         pq = prioq(k)
         neighbor_search_periodic(pq, cell, particles, particle.coord, np.array([1, 1]))
         
-        rhos[i] = density(pq, m=1, kernel="monaghan", h=0.1)
+        rhos[i] = density(pq, m=1, kernel="monaghan")
         
-        sph = sph_update(pq, particle.coord, h=0.1, u=10, v=velocities[i], rho0=1, dt=0.03)
-        #velocities[i] = sph["v"]
+        sph = sph_update(pq, particle.coord, u=0, v=velocities[i], rho0=1, dt=0.003)
         particle.coord = (sph["r"]) % 1
 
 
@@ -325,7 +333,7 @@ def update(frame):
 
 if __name__ == "__main__":
     k = 32
-    particles = np.array([Particle([np.random.random(), np.random.random()]) for _ in range(32)])
+    particles = np.array([Particle([np.random.random(), np.random.random()]) for _ in range(100)])
     cell = Cell([0, 0], [1, 1], 0, len(particles))
     particles, cell = recursive_partitioning(particles, cell, 0)
 
@@ -335,5 +343,5 @@ if __name__ == "__main__":
     fig, ax = plt.subplots(figsize=(8, 8))
     sc = ax.scatter([p.coord[0] for p in particles], [p.coord[1] for p in particles], c=rhos, cmap="viridis")
 
-    ani = FuncAnimation(fig, update, interval=1, blit=False, save_count=150)
-    ani.save("sph.mp4", writer="ffmpeg", fps=30)
+    ani = FuncAnimation(fig, update, interval=1, blit=False, save_count=100)
+    ani.save("sph.mp4", writer="ffmpeg", fps=10)
