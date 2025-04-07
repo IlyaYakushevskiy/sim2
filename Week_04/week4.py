@@ -320,7 +320,7 @@ def update(frame):
         
         rhos[i] = density(pq, m=1, kernel="monaghan")
         
-        sph = sph_update(pq, particle.coord, u=0, v=velocities[i], rho0=1, dt=0.003)
+        sph = sph_update(pq, particle.coord, u=0, v=velocities[i], rho0=1, dt=0.006)
         particle.coord = (sph["r"]) % 1
 
 
